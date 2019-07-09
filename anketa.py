@@ -9,6 +9,7 @@ from collections import OrderedDict
 import openpyxl
 from pymongo import MongoClient
 from lib import read_config, fine_phone
+import psycopg2
 
 QUESTIONS = ['financial_state','financial_strategy','savings_strategy','savings_state','savings_target',
              'savings_method','savings_insurance','personal_credit','personal_credit_debt','personal_accounting',
@@ -17,6 +18,29 @@ QUESTIONS = ['financial_state','financial_strategy','savings_strategy','savings_
              'secured_rights','secured_rights_police','financial_education_level','financial_education_sufficient',
              'financial_education_update','education_conference','education_conference_theme',
              'information_source_list','financial_subject_school']
+
+cfg = read_config(filename='anketa.ini', section='postgresql')
+conn = psycopg2.connect(**cfg)
+cursor = conn.cursor()
+cursor.execute('select ac.id, ac.lastname, ac.name, ac.middlename, di.title from account as ac '
+               'left join division as di on ac.division_id = di.id;')
+agents = {}
+for row in cursor:
+    agents[row[0]] = row
+agents_descriptions = {}
+for i, description in enumerate(cursor.description):
+    agents_descriptions[description.name] = i
+cursor.close()
+conn.close()
+
+wb = openpyxl.load_workbook(filename='agents.xlsx', read_only=True)
+ws = wb[wb.sheetnames[0]]
+agents_xls_city = {}
+agents_xls_firm = {}
+for i, row in enumerate(ws):
+    if i > 1 and row[2].value:
+        agents_xls_city[row[2].value.upper()] = row[0].value
+        agents_xls_firm[row[2].value.upper()] = row[1].value
 
 wb = openpyxl.load_workbook(filename='key.xlsx', read_only=True)
 ws = wb[wb.sheetnames[0]]
@@ -67,12 +91,11 @@ anketes = []
 for coll in colls.find():
     fio = coll['passport_lastname'] + ' ' + coll['passport_name'] + ' ' + coll['passport_middlename']
     anketes.append({'fio': fio, 'phone': fine_phone(coll['personal_phone']), 'created': coll['created_date'],
-                    'question_list': coll['question_list']})
-
+                    'city': coll['city'], 'owner_id': coll['owner_id'], 'question_list': coll['question_list']})
 wb_rez = openpyxl.Workbook(write_only=True)
-
 ws_rez = wb_rez.create_sheet('Количество по категориям')
-ws_rez.append(['ФИО', 'Телефон', 'Дата и время создания', 'Категории ->'])
+ws_rez.append(['Город Агента', 'Юр.лицо Агента', 'ФИО Агента', 'Подразделение', 'Город Клиента', 'ФИО Клиента',
+               'Телефон Клиента', 'Дата и время создания', 'Категории ->'])
 for ankete in reversed(anketes):
     sum_categories = {}
     for question in ankete['question_list']:
@@ -95,7 +118,12 @@ for ankete in reversed(anketes):
                             sum_categories[category] = 1
     sum_categories_sorted = OrderedDict(sorted(sum_categories.items(), key=lambda t: t[1],reverse=True))
     sum_categories_sorted4print = ''
-    rez_string = [ankete['fio'], ankete['phone'], ankete['created']]
+    fio = (agents[ankete['owner_id']][agents_descriptions['lastname']] + ' ' +
+           agents[ankete['owner_id']][agents_descriptions['name']] + ' ' +
+           agents[ankete['owner_id']][agents_descriptions['middlename']]).upper()
+    rez_string = [agents_xls_city.get(fio,''), agents_xls_firm.get(fio,''), fio,
+                  agents[ankete['owner_id']][agents_descriptions['title']],
+                  ankete['city'], ankete['fio'], ankete['phone'], ankete['created']]
     for sum_category in sum_categories_sorted:
         rez_string.append(sum_category + ': ' + str(sum_categories_sorted[sum_category]))
     ws_rez.append(rez_string)
